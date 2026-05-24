@@ -46,7 +46,8 @@
     <script type="text/babel">
       const { useEffect, useMemo, useRef, useState } = React
 
-      const STORAGE_KEY = 'multi-scene-bill-split:single-html:v2'
+      // 已升級 key：避免舊 localStorage 覆蓋新預設（參與者1/2/3）
+      const STORAGE_KEY = 'multi-scene-bill-split:single-html:v3'
 
       function uid() {
         if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
@@ -76,6 +77,7 @@
       }
 
       function makeDefaultState() {
+        // ✅ 預設參與者名稱已改：參與者1 / 參與者2 / 參與者3
         const p1 = { id: uid(), name: '參與者1' }
         const p2 = { id: uid(), name: '參與者2' }
         const p3 = { id: uid(), name: '參與者3' }
@@ -257,7 +259,9 @@
                                   <td className="px-3 py-2 text-right tabular-nums">
                                     {formatMoney(row.paid)}
                                   </td>
-                                  <td className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}>
+                                  <td
+                                    className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}
+                                  >
                                     {formatMoney(diff)}
                                   </td>
                                 </tr>
@@ -293,18 +297,18 @@
                         return (
                           <tr key={p.id}>
                             <td className="px-3 py-2 font-medium">{p.name}</td>
-                            <td className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}>
+                            <td
+                              className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}
+                            >
                               {formatMoney(diff)}
                             </td>
                           </tr>
                         )
-                      })}
+                      ))}
                     </tbody>
                   </table>
                 </div>
-                <div className="mt-2 text-xs text-slate-500">
-                  註：正數＝還要付；負數＝可收回
-                </div>
+                <div className="mt-2 text-xs text-slate-500">註：正數＝還要付；負數＝可收回</div>
               </div>
             </div>
           </div>
@@ -401,8 +405,6 @@
         async function exportPdf() {
           try {
             setExporting(true)
-
-            // 等 React render 完 ExportView
             await new Promise((r) => setTimeout(r, 60))
 
             const node = exportRef.current
@@ -423,7 +425,6 @@
             const pageWidth = pdf.internal.pageSize.getWidth()
             const pageHeight = pdf.internal.pageSize.getHeight()
 
-            // 將 canvas 以 A4 寬度等比縮放
             const imgWidth = pageWidth
             const imgHeight = (canvas.height * imgWidth) / canvas.width
 
@@ -435,12 +436,12 @@
 
             while (heightLeft > 0) {
               pdf.addPage()
-              position = - (imgHeight - heightLeft)
+              position = -(imgHeight - heightLeft)
               pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
               heightLeft -= pageHeight
             }
 
-            const filename = `分賬結算_${new Date().toISOString().slice(0,10)}.pdf`
+            const filename = `分賬結算_${new Date().toISOString().slice(0, 10)}.pdf`
             pdf.save(filename)
           } catch (err) {
             alert('匯出 PDF 失敗：' + (err?.message || String(err)))
@@ -505,7 +506,7 @@
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') addParticipant()
                         }}
-                        placeholder="例如：Eunice"
+                        placeholder="例如：參與者4"
                         className="w-48 rounded-md border px-3 py-1.5 text-sm outline-none focus:border-slate-400"
                         disabled={exporting}
                       />
@@ -830,7 +831,6 @@
                   <ul className="mt-2 list-disc space-y-1 pl-4">
                     <li>沒參與的人頭設為 0（不會分攤）。</li>
                     <li>某項目未指定墊付者時，不會算到任何人的「已付」。</li>
-                    <li>資料會自動儲存在瀏覽器（localStorage），下次打開仍會保留。</li>
                     <li>輸入完成後按右上角「匯出 PDF」即可下載分享。</li>
                   </ul>
                 </div>
@@ -844,14 +844,7 @@
             </footer>
 
             {/* 匯出用：隱藏但會被 html2canvas 擷取 */}
-            <div
-              style={{
-                position: 'fixed',
-                left: -99999,
-                top: 0,
-                width: 900,
-              }}
-            >
+            <div style={{ position: 'fixed', left: -99999, top: 0, width: 900 }}>
               <div ref={exportRef}>
                 <ExportView state={state} scenesComputed={scenesComputed} totalByPerson={totalByPerson} />
               </div>
