@@ -41,8 +41,8 @@
     <script type="text/babel">
       const { useEffect, useMemo, useRef, useState } = React;
 
-      // 使用全新的智慧 Key，避免舊快取干擾導致空白
-      const STORAGE_KEY = 'multi-scene-bill-split:single-html:v4';
+      // 更新快取 Key 確保所有人都能看到最新的預設名稱
+      const STORAGE_KEY = 'multi-scene-bill-split:single-html:v5';
 
       function uid() {
         if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -69,6 +69,7 @@
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
 
+      // 這裡已成功修改：預設參與者改為 參與者1, 參與者2, 參與者3
       function makeDefaultState() {
         const p1 = { id: uid(), name: '參與者1' };
         const p2 = { id: uid(), name: '參與者2' };
@@ -381,7 +382,7 @@
               position = -(imgHeight - heightLeft);
               pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
               heightLeft -= pageHeight;
-          }
+            }
 
             const filename = `分賬結算_${new Date().toISOString().slice(0, 10)}.pdf`;
             pdf.save(filename);
