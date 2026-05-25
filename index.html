@@ -1,866 +1,497 @@
-<!doctype html>
-<html lang="zh-Hant">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>多人多場景記賬分賬</title>
-
-    <!-- Tailwind (CDN) -->
-    <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- React (CDN) -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-
-    <!-- Babel：允許直接在 HTML 寫 JSX（免打包；適合 Netlify Drop 單檔部署） -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多人多場景記賬分賬系統</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-    <!-- PDF 匯出用（CDN） -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-      input[type='number'] {
-        appearance: textfield;
-      }
-      input[type='number']::-webkit-outer-spin-button,
-      input[type='number']::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-      }
-
-      /* 匯出時用嘅排版微調 */
-      .pdf-page {
-        background: white;
-        color: #0f172a;
-      }
-      .pdf-title {
-        letter-spacing: -0.02em;
-      }
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
     </style>
-  </head>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
 
-  <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
-      const { useEffect, useMemo, useRef, useState } = React
+        const { useState, useMemo } = React;
 
-      const STORAGE_KEY = 'multi-scene-bill-split:single-html:v2'
+        function App() {
+            // 1. 基礎設定：參與者列表
+            const [members, setMembers] = useState(['小明', '小紅', '阿華']);
+            const [newMemberName, setNewMemberName] = useState('');
 
-      function uid() {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-        return `id_${Math.random().toString(16).slice(2)}_${Date.now()}`
-      }
+            // 2. 核心數據：多場景記賬
+            const [scenes, setScenes] = useState([
+                {
+                    id: 'scene-1',
+                    name: '午餐 - 火鍋',
+                    shares: { '小明': 1, '小紅': 1, '阿華': 1 }, // 人頭數
+                    items: [
+                        { id: 'item-1', name: '肉盤與菜盤', amount: 1200, paidBy: '小明' },
+                        { id: 'item-2', name: '飲料', amount: 150, paidBy: '小紅' }
+                    ]
+                }
+            ]);
 
-      function clampNonNegative(n) {
-        const v = Number(n)
-        if (Number.isNaN(v) || !Number.isFinite(v)) return 0
-        return Math.max(0, v)
-      }
+            // 新增成員
+            const handleAddMember = (e) => {
+                e.preventDefault();
+                if (!newMemberName.trim()) return;
+                if (members.includes(newMemberName.trim())) {
+                    alert('成員名稱已存在！');
+                    return;
+                }
+                const name = newMemberName.trim();
+                setMembers([...members, name]);
+                // 同步更新所有場景，預設新成員人頭數為 1
+                setScenes(scenes.map(scene => ({
+                    ...scene,
+                    shares: { ...scene.shares, [name]: 1 }
+                })));
+                setNewMemberName('');
+            };
 
-      function formatMoney(n) {
-        const v = Number.isFinite(n) ? n : 0
-        return new Intl.NumberFormat('zh-TW', {
-          maximumFractionDigits: 2,
-          minimumFractionDigits: 0,
-        }).format(v)
-      }
+            // 刪除成員
+            const handleRemoveMember = (name) => {
+                if (members.length <= 1) {
+                    alert('至少需要保留一位成員！');
+                    return;
+                }
+                setMembers(members.filter(m => m !== name));
+                // 同步刪除場景中的該成員數據
+                setScenes(scenes.map(scene => {
+                    const nextShares = { ...scene.shares };
+                    delete nextShares[name];
+                    const nextItems = scene.items.map(item => 
+                        item.paidBy === name ? { ...item, paidBy: members.find(m => m !== name) || '' } : item
+                    );
+                    return { ...scene, shares: nextShares, items: nextItems };
+                }));
+            };
 
-      function nowText() {
-        const d = new Date()
-        const pad = (x) => String(x).padStart(2, '0')
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-          d.getHours(),
-        )}:${pad(d.getMinutes())}`
-      }
+            // 新增場景
+            const handleAddScene = () => {
+                const defaultShares = {};
+                members.forEach(m => defaultShares[m] = 1);
+                const newScene = {
+                    id: `scene-${Date.now()}`,
+                    name: `新活動場景 ${scenes.length + 1}`,
+                    shares: defaultShares,
+                    items: [{ id: `item-${Date.now()}`, name: '項目1', amount: 0, paidBy: members[0] || '' }]
+                };
+                setScenes([...scenes, newScene]);
+            };
 
-      function makeDefaultState() {
-        const p1 = { id: uid(), name: 'Eunice' }
-        const p2 = { id: uid(), name: 'Tinky' }
-        const p3 = { id: uid(), name: '未生' }
-        const participants = [p1, p2, p3]
+            // 刪除場景
+            const handleRemoveScene = (sceneId) => {
+                if (scenes.length <= 1) {
+                    alert('至少需保留一個場景！');
+                    return;
+                }
+                setScenes(scenes.filter(s => s.id !== sceneId));
+            };
 
-        const scene = {
-          id: uid(),
-          name: '午餐',
-          heads: Object.fromEntries(participants.map((p) => [p.id, 1])),
-          items: [
-            { id: uid(), name: '餐點', amount: 600, payerId: p1.id },
-            { id: uid(), name: '飲料', amount: 180, payerId: p2.id },
-          ],
-        }
+            // 更新場景名稱
+            const handleSceneNameChange = (sceneId, val) => {
+                setScenes(scenes.map(s => s.id === sceneId ? { ...s, name: val } : s));
+            };
 
-        return { participants, scenes: [scene] }
-      }
+            // 更新個人權重人頭數
+            const handleShareChange = (sceneId, member, val) => {
+                const num = val === '' ? 0 : Math.max(0, parseFloat(val) || 0);
+                setScenes(scenes.map(s => s.id === sceneId ? {
+                    ...s,
+                    shares: { ...s.shares, [member]: num }
+                } : s));
+            };
 
-      function safeLoadState() {
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY)
-          if (!raw) return makeDefaultState()
-          const parsed = JSON.parse(raw)
-          if (!parsed || !Array.isArray(parsed.participants) || !Array.isArray(parsed.scenes)) {
-            return makeDefaultState()
-          }
-          return parsed
-        } catch {
-          return makeDefaultState()
-        }
-      }
+            // 新增消費項目
+            const handleAddItem = (sceneId) => {
+                setScenes(scenes.map(s => s.id === sceneId ? {
+                    ...s,
+                    items: [...s.items, { id: `item-${Date.now()}`, name: '', amount: 0, paidBy: members[0] || '' }]
+                } : s));
+            };
 
-      function calcScene(scene, participants) {
-        const totalAmount = (scene.items || []).reduce(
-          (sum, it) => sum + clampNonNegative(it.amount),
-          0,
-        )
-        const totalHeads = (participants || []).reduce(
-          (sum, p) => sum + clampNonNegative((scene.heads || {})[p.id] ?? 0),
-          0,
-        )
-        const avg = totalHeads > 0 ? totalAmount / totalHeads : 0
-
-        const perPerson = Object.fromEntries(
-          (participants || []).map((p) => {
-            const heads = clampNonNegative((scene.heads || {})[p.id] ?? 0)
-            const owed = avg * heads
-            const paid = (scene.items || [])
-              .filter((it) => it.payerId === p.id)
-              .reduce((sum, it) => sum + clampNonNegative(it.amount), 0)
-            const diff = owed - paid // 正數：還要付；負數：可收回
-            return [p.id, { heads, owed, paid, diff }]
-          }),
-        )
-
-        return { totalAmount, totalHeads, avg, perPerson }
-      }
-
-      function ExportView({ state, scenesComputed, totalByPerson }) {
-        const timestamp = nowText()
-
-        const payerName = (payerId) => {
-          const p = (state.participants || []).find((x) => x.id === payerId)
-          return p ? p.name : '未指定'
-        }
-
-        return (
-          <div className="pdf-page rounded-xl border bg-white p-6">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="pdf-title text-2xl font-semibold">多人多場景記賬 / 分賬</div>
-                <div className="mt-1 text-sm text-slate-500">匯出時間：{timestamp}</div>
-              </div>
-              <div className="text-right text-sm">
-                <div className="font-semibold text-slate-700">差額定義</div>
-                <div className="text-slate-500">差額 = 應付 - 已付</div>
-                <div className="text-slate-500">正數：還要付；負數：可收回</div>
-              </div>
-            </div>
-
-            <div className="mt-6 space-y-6">
-              {scenesComputed.map(({ scene, computed }) => (
-                <div key={scene.id} className="rounded-lg border p-4">
-                  <div className="text-lg font-semibold">{scene.name}</div>
-
-                  <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div>
-                      <div className="text-sm font-semibold text-slate-700">消費項目</div>
-                      <div className="mt-2 overflow-hidden rounded-md border">
-                        <table className="min-w-full text-left text-sm">
-                          <thead className="bg-slate-50 text-xs text-slate-500">
-                            <tr>
-                              <th className="px-3 py-2 font-medium">品名</th>
-                              <th className="px-3 py-2 text-right font-medium">金額</th>
-                              <th className="px-3 py-2 font-medium">墊付者</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y">
-                            {(scene.items || []).length === 0 ? (
-                              <tr>
-                                <td className="px-3 py-3 text-slate-500" colSpan={3}>
-                                  （無項目）
-                                </td>
-                              </tr>
-                            ) : (
-                              (scene.items || []).map((it) => (
-                                <tr key={it.id}>
-                                  <td className="px-3 py-2">{it.name || '（未命名）'}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">
-                                    {formatMoney(it.amount ?? 0)}
-                                  </td>
-                                  <td className="px-3 py-2">{payerName(it.payerId)}</td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-3 gap-2">
-                        <div className="rounded-md bg-slate-50 p-3">
-                          <div className="text-xs text-slate-500">總金額</div>
-                          <div className="mt-1 font-semibold tabular-nums">
-                            {formatMoney(computed.totalAmount)}
-                          </div>
-                        </div>
-                        <div className="rounded-md bg-slate-50 p-3">
-                          <div className="text-xs text-slate-500">總人頭</div>
-                          <div className="mt-1 font-semibold tabular-nums">
-                            {formatMoney(computed.totalHeads)}
-                          </div>
-                        </div>
-                        <div className="rounded-md bg-slate-50 p-3">
-                          <div className="text-xs text-slate-500">每人頭均分</div>
-                          <div className="mt-1 font-semibold tabular-nums">
-                            {computed.totalHeads > 0 ? formatMoney(computed.avg) : '—'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-sm font-semibold text-slate-700">成員結算</div>
-                      <div className="mt-2 overflow-hidden rounded-md border">
-                        <table className="min-w-full text-left text-sm">
-                          <thead className="bg-slate-50 text-xs text-slate-500">
-                            <tr>
-                              <th className="px-3 py-2 font-medium">成員</th>
-                              <th className="px-3 py-2 text-right font-medium">人頭</th>
-                              <th className="px-3 py-2 text-right font-medium">應付</th>
-                              <th className="px-3 py-2 text-right font-medium">已付</th>
-                              <th className="px-3 py-2 text-right font-medium">差額</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y">
-                            {(state.participants || []).map((p) => {
-                              const row = computed.perPerson[p.id] || {
-                                heads: 0,
-                                owed: 0,
-                                paid: 0,
-                                diff: 0,
-                              }
-                              const diff = row.diff ?? 0
-                              const diffText =
-                                diff > 0.000001
-                                  ? 'text-rose-600'
-                                  : diff < -0.000001
-                                    ? 'text-emerald-600'
-                                    : 'text-slate-600'
-                              return (
-                                <tr key={p.id}>
-                                  <td className="px-3 py-2 font-medium">{p.name}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">
-                                    {formatMoney(row.heads)}
-                                  </td>
-                                  <td className="px-3 py-2 text-right tabular-nums">
-                                    {formatMoney(row.owed)}
-                                  </td>
-                                  <td className="px-3 py-2 text-right tabular-nums">
-                                    {formatMoney(row.paid)}
-                                  </td>
-                                  <td className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}>
-                                    {formatMoney(diff)}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              <div className="rounded-lg border p-4">
-                <div className="text-lg font-semibold">Total Summary（跨場景加總）</div>
-                <div className="mt-2 overflow-hidden rounded-md border">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-slate-50 text-xs text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">成員</th>
-                        <th className="px-3 py-2 text-right font-medium">最終差額</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {(state.participants || []).map((p) => {
-                        const diff = totalByPerson[p.id] ?? 0
-                        const diffText =
-                          diff > 0.000001
-                            ? 'text-rose-600'
-                            : diff < -0.000001
-                              ? 'text-emerald-600'
-                              : 'text-slate-600'
-                        return (
-                          <tr key={p.id}>
-                            <td className="px-3 py-2 font-medium">{p.name}</td>
-                            <td className={`px-3 py-2 text-right font-semibold tabular-nums ${diffText}`}>
-                              {formatMoney(diff)}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="mt-2 text-xs text-slate-500">
-                  註：正數＝還要付；負數＝可收回
-                </div>
-              </div>
-            </div>
-          </div>
-        )
-      }
-
-      function App() {
-        const [state, setState] = useState(() => safeLoadState())
-        const [newParticipantName, setNewParticipantName] = useState('')
-        const [exporting, setExporting] = useState(false)
-        const exportRef = useRef(null)
-
-        useEffect(() => {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-        }, [state])
-
-        const scenesComputed = useMemo(() => {
-          return (state.scenes || []).map((s) => ({
-            scene: s,
-            computed: calcScene(s, state.participants || []),
-          }))
-        }, [state.participants, state.scenes])
-
-        const totalByPerson = useMemo(() => {
-          const totals = Object.fromEntries((state.participants || []).map((p) => [p.id, 0]))
-          for (const sc of scenesComputed) {
-            for (const p of state.participants || []) {
-              totals[p.id] += sc.computed.perPerson[p.id]?.diff ?? 0
-            }
-          }
-          return totals
-        }, [scenesComputed, state.participants])
-
-        function addParticipant() {
-          const name = (newParticipantName || '').trim()
-          if (!name) return
-          const p = { id: uid(), name }
-          setState((prev) => ({
-            participants: [...(prev.participants || []), p],
-            scenes: (prev.scenes || []).map((s) => ({
-              ...s,
-              heads: { ...(s.heads || {}), [p.id]: 1 },
-            })),
-          }))
-          setNewParticipantName('')
-        }
-
-        function removeParticipant(participantId) {
-          setState((prev) => ({
-            participants: (prev.participants || []).filter((p) => p.id !== participantId),
-            scenes: (prev.scenes || []).map((s) => {
-              const heads = { ...(s.heads || {}) }
-              delete heads[participantId]
-              const items = (s.items || []).map((it) =>
-                it.payerId === participantId ? { ...it, payerId: '' } : it,
-              )
-              return { ...s, heads, items }
-            }),
-          }))
-        }
-
-        function addScene() {
-          setState((prev) => {
-            const nextIndex = (prev.scenes || []).length + 1
-            const scene = {
-              id: uid(),
-              name: `場景 ${nextIndex}`,
-              heads: Object.fromEntries((prev.participants || []).map((p) => [p.id, 1])),
-              items: [],
-            }
-            return { ...prev, scenes: [...(prev.scenes || []), scene] }
-          })
-        }
-
-        function removeScene(sceneId) {
-          setState((prev) => ({
-            ...prev,
-            scenes: (prev.scenes || []).filter((s) => s.id !== sceneId),
-          }))
-        }
-
-        function updateScene(sceneId, patch) {
-          setState((prev) => ({
-            ...prev,
-            scenes: (prev.scenes || []).map((s) => (s.id === sceneId ? { ...s, ...patch } : s)),
-          }))
-        }
-
-        function resetAll() {
-          if (!confirm('確定要清空所有資料並回到預設範例嗎？')) return
-          setState(makeDefaultState())
-        }
-
-        async function exportPdf() {
-          try {
-            setExporting(true)
-
-            // 等 React render 完 ExportView
-            await new Promise((r) => setTimeout(r, 60))
-
-            const node = exportRef.current
-            if (!node) throw new Error('找不到匯出內容')
-
-            const canvas = await html2canvas(node, {
-              scale: 2,
-              useCORS: true,
-              backgroundColor: '#ffffff',
-              windowWidth: node.scrollWidth,
-            })
-
-            const imgData = canvas.toDataURL('image/png')
-
-            const { jsPDF } = window.jspdf
-            const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' })
-
-            const pageWidth = pdf.internal.pageSize.getWidth()
-            const pageHeight = pdf.internal.pageSize.getHeight()
-
-            // 將 canvas 以 A4 寬度等比縮放
-            const imgWidth = pageWidth
-            const imgHeight = (canvas.height * imgWidth) / canvas.width
-
-            let heightLeft = imgHeight
-            let position = 0
-
-            pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-            heightLeft -= pageHeight
-
-            while (heightLeft > 0) {
-              pdf.addPage()
-              position = - (imgHeight - heightLeft)
-              pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight)
-              heightLeft -= pageHeight
-            }
-
-            const filename = `分賬結算_${new Date().toISOString().slice(0,10)}.pdf`
-            pdf.save(filename)
-          } catch (err) {
-            alert('匯出 PDF 失敗：' + (err?.message || String(err)))
-          } finally {
-            setExporting(false)
-          }
-        }
-
-        return (
-          <div className="min-h-screen">
-            <header className="sticky top-0 z-10 border-b bg-white/80 backdrop-blur">
-              <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-                <div>
-                  <h1 className="text-lg font-semibold tracking-tight">多人多場景記賬 / 分賬</h1>
-                  <p className="text-xs text-slate-500">
-                    差額 = 應付 - 已付（正數：需要再付；負數：可收回）
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="rounded-md border bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
-                    onClick={addScene}
-                    disabled={exporting}
-                  >
-                    + 新增場景
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-md border bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
-                    onClick={resetAll}
-                    disabled={exporting}
-                  >
-                    重置
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
-                    onClick={exportPdf}
-                    disabled={exporting}
-                    title="把所有場景＋總結算匯出成 PDF"
-                  >
-                    {exporting ? '匯出中…' : '匯出 PDF'}
-                  </button>
-                </div>
-              </div>
-            </header>
-
-            <main className="mx-auto grid max-w-6xl grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[1fr_320px]">
-              <div className="space-y-4">
-                <section className="rounded-xl border bg-white p-4">
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <h2 className="text-sm font-semibold text-slate-900">基礎設定：參與者</h2>
-                      <p className="text-xs text-slate-500">新增/刪除會同步影響每個場景的人頭欄位。</p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <input
-                        value={newParticipantName}
-                        onChange={(e) => setNewParticipantName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') addParticipant()
-                        }}
-                        placeholder="例如：Eunice"
-                        className="w-48 rounded-md border px-3 py-1.5 text-sm outline-none focus:border-slate-400"
-                        disabled={exporting}
-                      />
-                      <button
-                        type="button"
-                        className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
-                        onClick={addParticipant}
-                        disabled={exporting}
-                      >
-                        新增
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {(state.participants || []).length === 0 ? (
-                      <div className="text-sm text-slate-500">尚未新增參與者</div>
-                    ) : (
-                      (state.participants || []).map((p) => (
-                        <span
-                          key={p.id}
-                          className="inline-flex items-center gap-2 rounded-full border bg-slate-50 px-3 py-1 text-sm"
-                        >
-                          <input
-                            value={p.name}
-                            onChange={(e) => {
-                              const name = e.target.value
-                              setState((prev) => ({
-                                ...prev,
-                                participants: (prev.participants || []).map((x) =>
-                                  x.id === p.id ? { ...x, name } : x,
-                                ),
-                              }))
-                            }}
-                            className="w-24 bg-transparent outline-none"
-                            disabled={exporting}
-                          />
-                          <button
-                            type="button"
-                            className="text-slate-400 hover:text-slate-700 disabled:opacity-60"
-                            onClick={() => removeParticipant(p.id)}
-                            title="刪除"
-                            disabled={exporting}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                {scenesComputed.map(({ scene, computed }) => (
-                  <section key={scene.id} className="rounded-xl border bg-white p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm font-semibold text-slate-900">場景</div>
-                        <input
-                          value={scene.name}
-                          onChange={(e) => updateScene(scene.id, { name: e.target.value })}
-                          className="w-48 rounded-md border px-3 py-1.5 text-sm outline-none focus:border-slate-400"
-                          disabled={exporting}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-md border px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                        onClick={() => removeScene(scene.id)}
-                        disabled={exporting}
-                      >
-                        刪除場景
-                      </button>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
-                      <div className="rounded-lg border bg-slate-50 p-3">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-sm font-semibold">參與人頭數</h3>
-                          <div className="text-xs text-slate-500">未參與填 0</div>
-                        </div>
-
-                        <div className="mt-2 overflow-x-auto">
-                          <table className="min-w-full text-left text-sm">
-                            <thead className="text-xs text-slate-500">
-                              <tr>
-                                <th className="py-2 pr-3 font-medium">成員</th>
-                                <th className="py-2 pr-3 font-medium">人頭</th>
-                                <th className="py-2 pr-3 text-right font-medium">應付</th>
-                                <th className="py-2 pr-3 text-right font-medium">已付</th>
-                                <th className="py-2 text-right font-medium">差額</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y">
-                              {(state.participants || []).map((p) => {
-                                const row = computed.perPerson[p.id]
-                                const diff = row?.diff ?? 0
-                                const diffColor =
-                                  diff > 0.000001
-                                    ? 'text-rose-600'
-                                    : diff < -0.000001
-                                      ? 'text-emerald-600'
-                                      : 'text-slate-600'
-                                return (
-                                  <tr key={p.id} className="align-middle">
-                                    <td className="py-2 pr-3 font-medium text-slate-900">{p.name}</td>
-                                    <td className="py-2 pr-3">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        step="1"
-                                        value={(scene.heads || {})[p.id] ?? 0}
-                                        onChange={(e) => {
-                                          const n = clampNonNegative(e.target.value)
-                                          updateScene(scene.id, {
-                                            heads: { ...(scene.heads || {}), [p.id]: n },
-                                          })
-                                        }}
-                                        className="w-20 rounded-md border bg-white px-2 py-1 text-sm outline-none focus:border-slate-400"
-                                        disabled={exporting}
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-3 text-right tabular-nums">
-                                      {formatMoney(row?.owed ?? 0)}
-                                    </td>
-                                    <td className="py-2 pr-3 text-right tabular-nums">
-                                      {formatMoney(row?.paid ?? 0)}
-                                    </td>
-                                    <td className={`py-2 text-right font-semibold tabular-nums ${diffColor}`}>
-                                      {formatMoney(diff)}
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg border bg-slate-50 p-3">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-sm font-semibold">消費項目</h3>
-                          <button
-                            type="button"
-                            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white hover:bg-slate-800 disabled:opacity-60"
-                            onClick={() => {
-                              const newItem = {
-                                id: uid(),
-                                name: '',
-                                amount: 0,
-                                payerId: (state.participants || [])[0]?.id ?? '',
-                              }
-                              updateScene(scene.id, { items: [...(scene.items || []), newItem] })
-                            }}
-                            disabled={exporting}
-                          >
-                            + 新增項目
-                          </button>
-                        </div>
-
-                        <div className="mt-2 overflow-x-auto">
-                          <table className="min-w-full text-left text-sm">
-                            <thead className="text-xs text-slate-500">
-                              <tr>
-                                <th className="py-2 pr-3 font-medium">品名</th>
-                                <th className="py-2 pr-3 text-right font-medium">金額</th>
-                                <th className="py-2 pr-3 font-medium">誰先墊付</th>
-                                <th className="py-2 text-right font-medium">操作</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y">
-                              {(scene.items || []).length === 0 ? (
-                                <tr>
-                                  <td colSpan="4" className="py-6 text-center text-sm text-slate-500">
-                                    尚未新增消費項目
-                                  </td>
-                                </tr>
-                              ) : (
-                                (scene.items || []).map((it) => (
-                                  <tr key={it.id} className="align-middle">
-                                    <td className="py-2 pr-3">
-                                      <input
-                                        value={it.name || ''}
-                                        placeholder="例如：咖啡"
-                                        onChange={(e) => {
-                                          const next = (scene.items || []).map((x) =>
-                                            x.id === it.id ? { ...x, name: e.target.value } : x,
-                                          )
-                                          updateScene(scene.id, { items: next })
-                                        }}
-                                        className="w-full rounded-md border bg-white px-2 py-1 text-sm outline-none focus:border-slate-400"
-                                        disabled={exporting}
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-3 text-right">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        step="1"
-                                        value={it.amount ?? 0}
-                                        onChange={(e) => {
-                                          const amount = clampNonNegative(e.target.value)
-                                          const next = (scene.items || []).map((x) =>
-                                            x.id === it.id ? { ...x, amount } : x,
-                                          )
-                                          updateScene(scene.id, { items: next })
-                                        }}
-                                        className="w-28 rounded-md border bg-white px-2 py-1 text-right text-sm outline-none focus:border-slate-400"
-                                        disabled={exporting}
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-3">
-                                      <select
-                                        value={it.payerId || ''}
-                                        onChange={(e) => {
-                                          const payerId = e.target.value
-                                          const next = (scene.items || []).map((x) =>
-                                            x.id === it.id ? { ...x, payerId } : x,
-                                          )
-                                          updateScene(scene.id, { items: next })
-                                        }}
-                                        className="w-full rounded-md border bg-white px-2 py-1 text-sm outline-none focus:border-slate-400"
-                                        disabled={exporting}
-                                      >
-                                        <option value="">未指定</option>
-                                        {(state.participants || []).map((p) => (
-                                          <option key={p.id} value={p.id}>
-                                            {p.name}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                    <td className="py-2 text-right">
-                                      <button
-                                        type="button"
-                                        className="rounded-md border px-2 py-1 text-xs hover:bg-white disabled:opacity-60"
-                                        onClick={() => {
-                                          updateScene(scene.id, {
-                                            items: (scene.items || []).filter((x) => x.id !== it.id),
-                                          })
-                                        }}
-                                        disabled={exporting}
-                                      >
-                                        刪除
-                                      </button>
-                                    </td>
-                                  </tr>
-                                ))
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                          <div className="rounded-md bg-white p-3">
-                            <div className="text-xs text-slate-500">項目總金額</div>
-                            <div className="mt-1 text-lg font-semibold tabular-nums">
-                              {formatMoney(computed.totalAmount)}
-                            </div>
-                          </div>
-                          <div className="rounded-md bg-white p-3">
-                            <div className="text-xs text-slate-500">平均每人頭應付</div>
-                            <div className="mt-1 text-lg font-semibold tabular-nums">
-                              {computed.totalHeads > 0 ? formatMoney(computed.avg) : '—'}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              總人頭數：{formatMoney(computed.totalHeads)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-                ))}
-              </div>
-
-              <aside className="h-fit rounded-xl border bg-white p-4 lg:sticky lg:top-[72px]">
-                <h2 className="text-sm font-semibold text-slate-900">Total Summary</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  加總所有場景的「差額」。正數＝還要付；負數＝可收回。
-                </p>
-
-                <div className="mt-3 overflow-x-auto">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="text-xs text-slate-500">
-                      <tr>
-                        <th className="py-2 pr-3 font-medium">成員</th>
-                        <th className="py-2 text-right font-medium">最終差額</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {(state.participants || []).length === 0 ? (
-                        <tr>
-                          <td colSpan="2" className="py-6 text-center text-sm text-slate-500">
-                            尚未新增參與者
-                          </td>
-                        </tr>
-                      ) : (
-                        (state.participants || []).map((p) => {
-                          const diff = totalByPerson[p.id] ?? 0
-                          const diffColor =
-                            diff > 0.000001
-                              ? 'text-rose-600'
-                              : diff < -0.000001
-                                ? 'text-emerald-600'
-                                : 'text-slate-600'
-                          return (
-                            <tr key={p.id}>
-                              <td className="py-2 pr-3 font-medium text-slate-900">{p.name}</td>
-                              <td className={`py-2 text-right font-semibold tabular-nums ${diffColor}`}>
-                                {formatMoney(diff)}
-                              </td>
-                            </tr>
-                          )
+            // 更新消費項目欄位
+            const handleItemChange = (sceneId, itemId, field, val) => {
+                setScenes(scenes.map(s => {
+                    if (s.id !== sceneId) return s;
+                    return {
+                        ...s,
+                        items: s.items.map(item => {
+                            if (item.id !== itemId) return item;
+                            if (field === 'amount') {
+                                return { ...item, amount: val === '' ? 0 : Math.max(0, parseFloat(val) || 0) };
+                            }
+                            return { ...item, [field]: val };
                         })
-                      )}
-                    </tbody>
-                  </table>
+                    };
+                }));
+            };
+
+            // 刪除消費項目
+            const handleRemoveItem = (sceneId, itemId) => {
+                setScenes(scenes.map(s => {
+                    if (s.id !== sceneId) return s;
+                    if (s.items.length <= 1) {
+                        alert('每個場景至少要有一個消費項目！');
+                        return s;
+                    }
+                    return { ...s, items: s.items.filter(i => i.id !== itemId) };
+                }));
+            };
+
+            // ================= 核心計算邏輯 =================
+            const processedScenes = useMemo(() => {
+                return scenes.map(scene => {
+                    // 1. 項目總金額
+                    const totalAmount = scene.items.reduce((sum, item) => sum + item.amount, 0);
+                    
+                    // 2. 總參與人頭數
+                    const totalShares = Object.values(scene.shares).reduce((sum, val) => sum + val, 0);
+                    
+                    // 3. 平均每位應付 (防呆除以 0)
+                    const avgPerShare = totalShares > 0 ? totalAmount / totalShares : 0;
+
+                    // 計算每個人在此場景的「已付」與「應付」
+                    const memberBreakdown = {};
+                    members.forEach(m => {
+                        const paid = scene.items.reduce((sum, item) => item.paidBy === m ? sum + item.amount : sum, 0);
+                        const userShare = scene.shares[m] || 0;
+                        const expectedPay = avgPerShare * userShare;
+                        const balance = paid - expectedPay; // 正數代表可收回，負數代表需補錢
+
+                        memberBreakdown[m] = {
+                            share: userShare,
+                            paid: paid,
+                            expectedPay: expectedPay,
+                            balance: balance
+                        };
+                    });
+
+                    return {
+                        ...scene,
+                        totalAmount,
+                        totalShares,
+                        avgPerShare,
+                        memberBreakdown
+                    };
+                });
+            }, [scenes, members]);
+
+            // 4. 最終總結算 (Total Summary)
+            const totalSummary = useMemo(() => {
+                const summary = {};
+                members.forEach(m => {
+                    summary[m] = { totalPaid: 0, totalExpected: 0, finalBalance: 0 };
+                });
+
+                processedScenes.forEach(scene => {
+                    members.forEach(m => {
+                        if (scene.memberBreakdown[m]) {
+                            summary[m].totalPaid += scene.memberBreakdown[m].paid;
+                            summary[m].totalExpected += scene.memberBreakdown[m].expectedPay;
+                            summary[m].finalBalance += scene.memberBreakdown[m].balance;
+                        }
+                    });
+                });
+
+                return summary;
+            }, [processedScenes, members]);
+
+            // 5. 導出 PDF 功能
+            const exportToPDF = () => {
+                const element = document.getElementById('report-content');
+                const opt = {
+                    margin:       10,
+                    filename:     `分帳結算報告_${new Date().toISOString().slice(0,10)}.pdf`,
+                    image:        { type: 'jpeg', quality: 0.98 },
+                    html2canvas:  { scale: 2, useCORS: true },
+                    jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                };
+                html2pdf().set(opt).from(element).save();
+            };
+
+            return (
+                <div class="max-w-6xl mx-auto px-4 py-8">
+                    {/* Header */}
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-200 pb-6 mb-8 gap-4">
+                        <div>
+                            <h1 class="text-3xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                                <i class="fa-solid font-sm text-indigo-600 fa-calculator"></i> 多人多場景記賬分賬系統
+                            </h1>
+                            <p class="text-sm text-slate-500 mt-1">獨立管理多個活動場景，即時精準結算差額。</p>
+                        </div>
+                        <button 
+                            onClick={exportToPDF}
+                            class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-5 py-2.5 rounded-xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+                        >
+                            <i class="fa-solid fa-file-pdf"></i> 導出 PDF 報告
+                        </button>
+                    </div>
+
+                    {/* 可列印與導出的區塊 */}
+                    <div id="report-content" class="space-y-8">
+                        
+                        {/* 1. 基礎設定面板 */}
+                        <div class="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
+                            <h2 class="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                                <i class="fa-solid fa-users text-slate-400"></i> 1. 參與成員設定
+                            </h2>
+                            <form onSubmit={handleAddMember} class="flex flex-wrap gap-2 mb-4">
+                                <input 
+                                    type="text" 
+                                    placeholder="輸入成員名稱 (例如: A, B, C)" 
+                                    value={newMemberName}
+                                    onChange={(e) => setNewMemberName(e.target.value)}
+                                    class="border border-slate-300 rounded-xl px-4 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-indigo-500 bg-slate-50/50 w-full sm:w-64"
+                                />
+                                <button type="submit" class="bg-slate-900 hover:bg-slate-800 text-white font-medium text-sm px-4 py-2 rounded-xl transition-colors cursor-pointer">
+                                    + 新增成員
+                                </button>
+                            </form>
+                            
+                            <div class="flex flex-wrap gap-2">
+                                {members.map(name => (
+                                    <span key={name} class="inline-flex items-center gap-1.5 bg-slate-100 text-slate-700 text-sm font-medium pl-3 pr-2 py-1.5 rounded-full border border-slate-200">
+                                        {name}
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleRemoveMember(name)}
+                                            class="text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                                        >
+                                            <i class="fa-solid fa-circle-xmark"></i>
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* 2. 多場景記賬卡片區域 */}
+                        <div>
+                            <div class="flex items-center justify-between mb-4">
+                                <h2 class="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                                    <i class="fa-solid fa-layer-group text-slate-400"></i> 2. 活動場景記賬
+                                </h2>
+                                <button 
+                                    onClick={handleAddScene}
+                                    class="border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-sm px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                                >
+                                    <i class="fa-solid fa-folder-plus"></i> 新增活動場景
+                                </button>
+                            </div>
+
+                            <div class="space-y-6">
+                                {processedScenes.map((scene) => (
+                                    <div key={scene.id} class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+                                        {/* 卡片標頭 */}
+                                        <div class="bg-slate-50 border-b border-slate-200 px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                            <div class="flex items-center gap-3 flex-1">
+                                                <i class="fa-solid fa-file-invoice-dollar text-indigo-500 text-lg"></i>
+                                                <input 
+                                                    type="text" 
+                                                    value={scene.name} 
+                                                    onChange={(e) => handleSceneNameChange(scene.id, e.target.value)}
+                                                    class="font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:outline-hidden text-base py-0.5 px-1 w-full max-w-xs transition-colors"
+                                                />
+                                            </div>
+                                            <button 
+                                                onClick={() => handleRemoveScene(scene.id)}
+                                                class="text-slate-400 hover:text-rose-600 font-medium text-sm transition-colors flex items-center gap-1 cursor-pointer self-end sm:self-auto"
+                                            >
+                                                <i class="fa-regular fa-trash-can"></i> 刪除此場景
+                                            </button>
+                                        </div>
+
+                                        <div class="p-6 space-y-6">
+                                            {/* 消費項目子表格 */}
+                                            <div>
+                                                <div class="flex justify-between items-center mb-2">
+                                                    <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">消費細項</h3>
+                                                    <button 
+                                                        onClick={() => handleAddItem(scene.id)}
+                                                        class="text-xs text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer"
+                                                    >
+                                                        + 新增品項
+                                                    </button>
+                                                </div>
+                                                <div class="overflow-x-auto">
+                                                    <table class="min-w-full text-sm">
+                                                        <thead>
+                                                            <tr class="border-b border-slate-100 text-slate-500 text-left">
+                                                                <th class="pb-2 font-medium w-1/2">品名</th>
+                                                                <th class="pb-2 font-medium w-1/4">金額 (元)</th>
+                                                                <th class="pb-2 font-medium w-1/4">誰先墊付</th>
+                                                                <th class="pb-2 w-10"></th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody class="divide-y divide-slate-100">
+                                                            {scene.items.map(item => (
+                                                                <tr key={item.id}>
+                                                                    <td class="py-2.5 pr-2">
+                                                                        <input 
+                                                                            type="text" 
+                                                                            placeholder="例如: 炒飯、拿鐵..." 
+                                                                            value={item.name}
+                                                                            onChange={(e) => handleItemChange(scene.id, item.id, 'name', e.target.value)}
+                                                                            class="w-full bg-slate-50/50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                                                                        />
+                                                                    </td>
+                                                                    <td class="py-2.5 pr-2">
+                                                                        <input 
+                                                                            type="number" 
+                                                                            placeholder="0"
+                                                                            value={item.amount || ''}
+                                                                            onChange={(e) => handleItemChange(scene.id, item.id, 'amount', e.target.value)}
+                                                                            class="w-full bg-slate-50/50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                                                                        />
+                                                                    </td>
+                                                                    <td class="py-2.5 pr-2">
+                                                                        <select 
+                                                                            value={item.paidBy}
+                                                                            onChange={(e) => handleItemChange(scene.id, item.id, 'paidBy', e.target.value)}
+                                                                            class="w-full bg-slate-50/50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                                                                        >
+                                                                            {members.map(m => <option key={m} value={m}>{m}</option>)}
+                                                                        </select>
+                                                                    </td>
+                                                                    <td class="py-2.5 text-center">
+                                                                        <button 
+                                                                            onClick={() => handleRemoveItem(scene.id, item.id)}
+                                                                            class="text-slate-300 hover:text-rose-500 cursor-pointer"
+                                                                        >
+                                                                            <i class="fa-solid fa-xmark"></i>
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            {/* 人頭權重與此場景結算明細 */}
+                                            <div class="border-t border-slate-100 pt-4">
+                                                <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">成員參與人頭數 與 此場景結算</h3>
+                                                <div class="overflow-x-auto">
+                                                    <table class="min-w-full text-sm text-left">
+                                                        <thead>
+                                                            <tr class="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
+                                                                <th class="p-2.5 rounded-l-lg">成員</th>
+                                                                <th class="p-2.5 w-24">人頭數</th>
+                                                                <th class="p-2.5 text-right">已付款</th>
+                                                                <th class="p-2.5 text-right">應付金額</th>
+                                                                <th class="p-2.5 text-right rounded-r-lg">差額</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody class="divide-y divide-slate-100">
+                                                            {members.map(m => {
+                                                                const bd = scene.memberBreakdown[m] || { share: 0, paid: 0, expectedPay: 0, balance: 0 };
+                                                                return (
+                                                                    <tr key={m} class="hover:bg-slate-50/40">
+                                                                        <td class="p-2.5 font-medium text-slate-700">{m}</td>
+                                                                        <td class="p-2.5">
+                                                                            <input 
+                                                                                type="number" 
+                                                                                step="0.1"
+                                                                                placeholder="0"
+                                                                                value={bd.share}
+                                                                                onChange={(e) => handleShareChange(scene.id, m, e.target.value)}
+                                                                                class="w-16 bg-white border border-slate-200 rounded-md px-1.5 py-1 text-center text-sm focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                                                                            />
+                                                                        </td>
+                                                                        <td class="p-2.5 text-right text-slate-600">${bd.paid.toFixed(1)}</td>
+                                                                        <td class="p-2.5 text-right text-slate-600">${bd.expectedPay.toFixed(1)}</td>
+                                                                        <td class={`p-2.5 text-right font-semibold ${bd.balance >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                                            {bd.balance >= 0 ? `+${bd.balance.toFixed(1)}` : bd.balance.toFixed(1)}
+                                                                        </td>
+                                                                    </tr>
+                                                                );
+                                                            })}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            {/* 場景統計小結 */}
+                                            <div class="bg-indigo-50/50 rounded-xl p-4 flex flex-wrap justify-between items-center gap-4 text-sm text-indigo-900 border border-indigo-100/50">
+                                                <div>
+                                                    <span class="font-medium">項目總金額：</span>
+                                                    <span class="text-base font-bold text-indigo-700">${scene.totalAmount.toFixed(1)}</span>
+                                                </div>
+                                                <div>
+                                                    <span class="font-medium">總人頭數：</span>
+                                                    <span class="text-base font-bold text-indigo-700">{scene.totalShares}</span>
+                                                </div>
+                                                <div>
+                                                    <span class="font-medium">平均每人頭應付：</span>
+                                                    <span class="text-base font-bold text-indigo-700">${scene.avgPerShare.toFixed(1)}</span>
+                                                </div>
+                                            </div>
+
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* 3. 最終總結算面版 (Total Summary) */}
+                        <div class="bg-slate-900 rounded-2xl p-6 text-white shadow-xl">
+                            <h2 class="text-lg font-bold mb-4 flex items-center gap-2 text-indigo-400">
+                                <i class="fa-solid fa-receipt"></i> 3. 最終總結算 (Total Summary)
+                            </h2>
+                            <p class="text-xs text-slate-400 mb-4">整合以上所有活動場景的加總報告：</p>
+                            
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm text-left">
+                                    <thead>
+                                        <tr class="border-b border-slate-700 text-slate-400 font-medium">
+                                            <th class="pb-3">成員</th>
+                                            <th class="pb-3 text-right">總已付金額</th>
+                                            <th class="pb-3 text-right">總應付金額</th>
+                                            <th class="pb-3 text-right">最終結算 (應收/應付)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-800">
+                                        {members.map(m => {
+                                            const sum = totalSummary[m] || { totalPaid: 0, totalExpected: 0, finalBalance: 0 };
+                                            return (
+                                                <tr key={m} class="hover:bg-slate-800/50">
+                                                    <td class="py-3.5 font-semibold text-slate-200 text-base">{m}</td>
+                                                    <td class="py-3.5 text-right text-slate-300">${sum.totalPaid.toFixed(1)}</td>
+                                                    <td class="py-3.5 text-right text-slate-300">${sum.totalExpected.toFixed(1)}</td>
+                                                    <td class="py-3.5 text-right text-base font-bold">
+                                                        {sum.finalBalance > 0 ? (
+                                                            <span class="text-emerald-400">可收回 +${sum.finalBalance.toFixed(1)}</span>
+                                                        ) : sum.finalBalance < 0 ? (
+                                                            <span class="text-rose-400">需補繳 ${sum.finalBalance.toFixed(1)}</span>
+                                                        ) : (
+                                                            <span class="text-slate-400">$0.0 (已清)</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </div>
                 </div>
+            );
+        }
 
-                <div className="mt-4 rounded-lg border bg-slate-50 p-3 text-xs text-slate-600">
-                  <div className="font-semibold text-slate-700">小提示</div>
-                  <ul className="mt-2 list-disc space-y-1 pl-4">
-                    <li>沒參與的人頭設為 0（不會分攤）。</li>
-                    <li>某項目未指定墊付者時，不會算到任何人的「已付」。</li>
-                    <li>資料會自動儲存在瀏覽器（localStorage），下次打開仍會保留。</li>
-                    <li>輸入完成後按右上角「匯出 PDF」即可下載分享。</li>
-                  </ul>
-                </div>
-              </aside>
-            </main>
-
-            <footer className="py-6">
-              <div className="mx-auto max-w-6xl px-4 text-xs text-slate-400">
-                Made with React + Tailwind • Real-time calculation
-              </div>
-            </footer>
-
-            {/* 匯出用：隱藏但會被 html2canvas 擷取 */}
-            <div
-              style={{
-                position: 'fixed',
-                left: -99999,
-                top: 0,
-                width: 900,
-              }}
-            >
-              <div ref={exportRef}>
-                <ExportView state={state} scenesComputed={scenesComputed} totalByPerson={totalByPerson} />
-              </div>
-            </div>
-          </div>
-        )
-      }
-
-      ReactDOM.createRoot(document.getElementById('root')).render(<App />)
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
     </script>
-  </body>
+</body>
 </html>
